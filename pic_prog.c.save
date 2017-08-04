@@ -1,0 +1,208 @@
+# include <stdio.h>
+# include <unistd.h>
+# include <fcntl.h>
+# include <errno.h>
+# include <eint_t.h>
+# include <sys/stat.h>
+# include <stdint.h>
+# include <stdlib.h>
+# include <string.h>
+# include <strings.h>
+# include <termios.h>
+int device_fd;
+int bin_fd;
+struct stat bin_st;
+
+mdl_u8_t load_prog_mem_cmd = 0x1;
+mdl_u8_t read_data_cmd = 0x2;
+mdl_u8_t reset_cmd = 0x4;
+mdl_u8_t bulk_erase_cmd = 0x5;
+mdl_u8_t incr_addr_cmd = 0x3;
+mdl_u8_t end_prog_cmd = 0x8;
+
+mdl_i8_t send_cmd(mdl_u8_t __cmd) {
+	write(device_fd, &__cmd, sizeof(mdl_u8_t));
+
+	mdl_uint_t try_count = 0;
+	mdl_uint_t max_trys = 20;
+	for (;;) {
+		mdl_u8_t ack = 0;
+		read(device_fd, &ack, sizeof(mdl_u8_t));
+		usleep(1000);
+		if (ack) {
+			printf("ack not valid trys: %u, max: %u\n", try_count, max_trys);
+			if (try_count >= max_trys) {
+				fprintf(stderr, "failed to send command.\n");
+				return -1;
+			}
+
+			try_count++;
+		} else {
+			printf("ack success.\n");
+			break;
+		}
+	}
+
+	return 0;
+}
+
+mdl_i8_t load_prog_mem(mdl_u16_t *__data) {
+	if (send_cmd(load_prog_mem_cmd) < 0) return -1;
+
+	write(device_fd, (mdl_u8_t*)__data, sizeof(mdl_u16_t));
+	usleep(1000);
+	return 0;
+}
+
+mdl_i8_t read_data(mdl_u16_t *__data) {
+	if (send_cmd(read_data_cmd) < 0) return -1;
+
+	read(device_fd, (mdl_u8_t*)__data, sizeof(mdl_u16_t));
+	usleep(1000);
+	return 0;
+}
+
+void print_bin(mdl_uint_t __bin, mdl_u8_t __n) {
+	for (mdl_u8_t itr = 0; itr != __n*8; itr++)
+		printf("%u", (__bin >> (((__n*8)-1)-itr)) & 1);
+}
+
+void mem_swap(mdl_u8_t *__a, mdl_u8_t *__b) {
+	mdl_u8_t tmp = *__a;
+	*__a = *__b;
+	*__b = tmp;
+}
+
+# include <math.h>
+int main(int __argc, char const *__argv[]) {
+	if (__argc < 2) {
+		fprintf(stderr, "please suply binary file.\n");
+		return -1;
+	}
+
+	if ((device_fd = open("/dev/ttyACM0", O_RDWR)) < 0) {
+		fprintf(stderr, "failed to open serial port.\n");
+		return -1;
+	}
+
+	char const *bin_file = __argv[1];
+
+	if ((bin_fd = open(bin_file, O_RDONLY)) < 0) {
+		close(device_fd);
+		fprintf(stderr, "failed to open file at %s\n", bin_file);
+		return -1;
+	}
+
+	if (stat(bin_file, &bin_st) < 0) {
+		close(device_fd);
+		close(bin_fd);
+		fprintf(stderr, "failed to stat file at %s\n", bin_file);
+		return -1;
+	}
+
+	struct termios tty;
+	memset(&tty, 0, sizeof(struct termios));
+
+	if (tcgetattr(device_fd, &tty) < 0) {
+		fprintf(stderr, "failed to get attributes.\n");
+		close(device_fd);
+		close(bin_fd);
+		return -1;
+	}
+
+	cfsetospeed(&tty, B38400);
+	cfsetispeed(&tty, B38400);
+
+	tty.c_cflag = (tty.c_cflag & ~CSIZE) | CS8;
+	tty.c_cflag |= (CLOCAL | CREAD);
+	tty.c_cflag &= ~CSTOPB;
+
+	tty.c_cc[VTIME] = 200;
+	tty.c_cc[VMIN] = 1;
+
+	if (tcsetattr(device_fd, TCSANOW, &tty) < 0) {
+		fprintf(stderr, "failed to set attributes.\n");
+		close(device_fd);
+		close(bin_fd);
+		return -1;
+	}
+
+	usleep(8000000); // wait
+
+//	mdl_uint_t size = ceil((double)bin_st.st_size/(double)sizeof(mdl_u16_t))*sizeof(mdl_u16_t);
+
+	mdl_uint_t bit_c = bin_st.st_size*8;
+	mdl_uint_t size = ceil((double)(bin_st.st_size*8)/(double)16)*sizeof(mdl_u16_t);
+	size += 2;
+
+	mdl_u8_t *bin_dump = (mdl_u8_t*)malloc(size);
+	bzero(bin_dump, size);
+
+	read(bin_fd, bin_dump, bin_st.st_size);
+
+	printf("bin size: %u, size: %u\n", bin_st.st_size, size);
+	mdl_u8_t uploaded = 0;
+//	mdl_u16_t db[800];
+//	mdl_u16_t *db_itr = db;
+
+	while(!uploaded) {
+		if (send_cmd(bulk_erase_cmd) < 0) goto err;
+		if (send_cmd(reset_cmd) < 0) goto err;
+
+//		for (mdl_u8_t *itr = bin_dump+size; itr != bin_dump; itr-=sizeof(mdl_u16_t)) {
+		printf("starting upload.\n");
+		mdl_u8_t *itr = bin_dump;
+		while(itr != bin_dump+size) {
+			mem_swap(itr, itr+1);
+
+			mdl_u16_t data = 0;
+			printf("|-> addr: %u\n", itr-bin_dump);
+			printf("|-> raw data: %u\n", *(mdl_u16_t*)itr);
+			printf("|-> raw bin: ");
+			print_bin(*(mdl_u16_t*)itr, 2);
+			printf("\n\n");
+
+
+			if (itr != bin_dump) {
+				data |= ((*(mdl_u16_t*)(itr-sizeof(mdl_u16_t))) & 3) << 12;
+				data |= (*(mdl_u16_t*)itr) >> 4;
+				data ^= data & 0xC000;
+			} else
+				data = (*(mdl_u16_t*)itr) >> 2;
+
+			printf("sent: %u, nut: %u\n", data, (*(mdl_u16_t*)itr) & 3);
+			printf("bin: ");
+			print_bin(data, 2);
+			printf("\n\n");
+
+			itr+=sizeof(mdl_u16_t);
+			if (load_prog_mem(&data) < 0) goto err;
+			if (send_cmd(end_prog_cmd) < 0) goto err;
+
+			mdl_u16_t r = 0;
+			if (read_data(&r) < 0) goto err;
+
+			if (data != r) {
+				fprintf(stderr, "sent: %x got %x. mismatch.\n", data, r);
+				goto err;
+			} else {
+				printf("sent: %x got %x. match.\n", data, r);
+			}
+
+			if (send_cmd(incr_addr_cmd) < 0) goto err;
+		}
+
+		if (send_cmd(reset_cmd) < 0) goto err;
+
+		uploaded = 1;
+		goto err;
+	}
+
+	err:
+	close(device_fd);
+	close(bin_fd);
+
+	free(bin_dump);
+
+	return 0;
+}
