@@ -2,7 +2,7 @@
 # include <unistd.h>
 # include <fcntl.h>
 # include <errno.h>
-# include <eint_t.h>
+# include <mdlint.h>
 # include <sys/stat.h>
 # include <stdint.h>
 # include <stdlib.h>
@@ -148,7 +148,7 @@ mdl_i8_t read_ihex(mdl_u16_t *__data, mdl_uint_t *__prog_size, char *__hex_fpth)
 
 	while(itr != file+st.st_size) {
 		if (*itr != ':') {
-			fprintf(stderr, "invaled start point got '%c' and not ':'.\n", *itr);
+			fprintf(stderr, "invalid start point got '%c' and not ':'.\n", *itr);
 			ret_err
 		}
 
@@ -239,7 +239,7 @@ mdl_i8_t pic_prog_write(char *__hex_fpth) {
 
 			mdl_u16_t r = 0;
 			read_prog_mem(&r);
-			if (r != (outbound&0x3FFF)) {
+			if (r != (outbound & 0x3FFF)) {
 				fprintf(stderr, "sent: %x, recved: %x, mismatch.\n", outbound, r);
 				ret_err
 			}
@@ -280,7 +280,7 @@ mdl_i8_t pic_prog_write(char *__hex_fpth) {
 				mdl_u16_t r = 0;
 
 				read_prog_mem(&r);
-				if (r != (outbound&0x3FFF)) {
+				if (r != (outbound & 0x3FFF)) {
 					fprintf(stderr, "sent: %x, recved: %x, mismatch.\n", outbound, r);
 					ret_err
 				}
@@ -294,7 +294,7 @@ mdl_i8_t pic_prog_write(char *__hex_fpth) {
 	}
 
 	err:
-	if (data)
+	if (data != NULL)
 		free(data);
 
 	return any_err;
